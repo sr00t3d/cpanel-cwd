@@ -298,7 +298,7 @@ source ~/.bashrc
 - **Bash Rewrite**: 2026
 - **Purpose**: System administration tool for cPanel/WHM servers
 
-## 🔗 Links
+## Links
 
 - Original HostGator Wiki: `https://gatorwiki.hostgator.com/Admin/CWD`
 - Original Repository: `http://git.toolbox.hostgator.com/cwd`
