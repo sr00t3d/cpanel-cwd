@@ -78,11 +78,11 @@ Simply run the script once - it will auto-install the wrapper:
 
 ```bash
 # Download and make executable
-curl -O https://raw.githubusercontent.com/sr00t3d/cpanel-cwd/refs/heads/main/cwd.sh
-chmod +x cwd.sh
+curl -O https://raw.githubusercontent.com/sr00t3d/cpanel-cwd/refs/heads/main/cp-cwd.sh
+chmod +x cp-cwd.sh
 
 # Run once to install wrapper
-./cwd.sh any-domain.com
+./cp-cwd.sh any-domain.com
 
 # Output:
 # CWD wrapper installed in .bashrc
@@ -96,7 +96,7 @@ Add to your `~/.bashrc`:
 ```bash
 cwd() {
     local output
-    output=$("/path/to/cwd.sh" "$@" 2>&1)
+    output=$("/path/to/cp-cwd.sh" "$@" 2>&1)
     local exit_code=$?
     if [[ $exit_code -eq 0 ]]; then
         eval "$output"
@@ -220,7 +220,7 @@ The script uses a bash trick to change the **current shell's** directory:
 cd /home/user/public_html
 
 # Wrapper evaluates:
-eval "$(cwd.sh domain.com)"
+eval "$(cp-cwd.sh domain.com)"
 ```
 
 Without this, `cd` would only change the directory in a subshell.
@@ -246,7 +246,7 @@ Without this, `cd` would only change the directory in a subshell.
 source ~/.bashrc
 
 # Or run directly once to install:
-./cwd.sh any-domain.com
+./cp-cwd.sh any-domain.com
 ```
 
 ### "Could not determine document root"
@@ -277,7 +277,7 @@ grep -n "CWD AUTO-WRAPPER" ~/.bashrc
 Clean and reinstall:
 ```bash
 sed -i '/# CWD AUTO-WRAPPER/,/# END CWD WRAPPER/d' ~/.bashrc
-./cwd.sh domain.com  # Reinstalls once
+./cp-cwd.sh domain.com  # Reinstalls once
 source ~/.bashrc
 ```
 
