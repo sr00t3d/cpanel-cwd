@@ -1,318 +1,505 @@
 #!/usr/bin/env bash
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║                                                                           ║
-# ║   cPanel Change Working Directory v1.0.0                                  ║
+# ║   cPanel Change Working Directory (cp-cwd.sh) v2.0.0                      ║
 # ║                                                                           ║
 # ╠═══════════════════════════════════════════════════════════════════════════╣
-# ║   Author:   Percio Castelo                                                ║
-# ║   Contact:  percio@evolya.com.br | contato@perciocastelo.com.br           ║
-# ║   Web:      https://perciocastelo.com.br                                  ║
+# ║   Autor:   Percio Castelo                                                 ║
+# ║   Contato: percio@evolya.com.br | contato@perciocastelo.com.br            ║
+# ║   Web:     https://perciocastelo.com.br                                   ║
 # ║                                                                           ║
-# ║   Function: Change to DocumentRoot - accepts username OR domain           ║
-# ║                                                                           ║
+# ║   Função:  Smart SSH navigation wrapper for cPanel/WHM servers. Instantly ║
+# ║            resolves document roots by domain or username with subpath     ║
+# ║            fallback, shell wrapper installer, and table/json/csv listing. ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
 
-# Detects if it is being executed directly
-if [[ "$0" != "bash" && "$0" != "-bash" && "$0" != *"cwd" ]]; then
-    SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-    
-    check_and_install_wrapper() {
-        local bashrc="$HOME/.bashrc"
-        local wrapper_marker="# CWD AUTO-WRAPPER"
-        
-        if grep -q "$wrapper_marker" "$bashrc" 2>/dev/null && grep -q "$SCRIPT_PATH" "$bashrc" 2>/dev/null; then
-            return 0
-        fi
-        
-        if grep -q "$wrapper_marker" "$bashrc" 2>/dev/null; then
-            sed -i "/$wrapper_marker/,/# END CWD WRAPPER/d" "$bashrc" 2>/dev/null
-        fi
-        
-        cat >> "$bashrc" << EOF
+set -uo pipefail
+export LC_ALL=C
 
-# CWD AUTO-WRAPPER - DO NOT MODIFY
+readonly VERSION="2.0.0"
+readonly SCRIPT_NAME="$(basename "$0")"
+
+# =============================================================================
+# Defaults
+# =============================================================================
+TARGET=""
+MODE="print"            # print | eval | list | install | uninstall
+OUTPUT_FORMAT="table"   # table | json | csv
+QUIET=false
+NO_COLOR=false
+
+# =============================================================================
+# Colors
+# =============================================================================
+C_RESET=""
+C_RED=""
+C_GREEN=""
+C_YELLOW=""
+C_CYAN=""
+C_DIM=""
+
+init_colors() {
+    if [[ "$NO_COLOR" == false && "$OUTPUT_FORMAT" == "table" && -t 1 ]]; then
+        C_RESET=$'\033[0m'
+        C_DIM=$'\033[2m'
+        C_RED=$'\033[0;31m'
+        C_GREEN=$'\033[0;32m'
+        C_YELLOW=$'\033[0;33m'
+        C_CYAN=$'\033[0;36m'
+    fi
+}
+
+log_info() { [[ "$QUIET" == false ]] && echo -e "${C_CYAN}[→]${C_RESET} $*" >&2; }
+log_ok()   { [[ "$QUIET" == false ]] && echo -e "${C_GREEN}[+]${C_RESET} $*" >&2; }
+log_warn() { [[ "$QUIET" == false ]] && echo -e "${C_YELLOW}[!]${C_RESET} $*" >&2; }
+log_err()  { echo -e "${C_RED}[x] Error:${C_RESET} $*" >&2; }
+
+# =============================================================================
+# Help
+# =============================================================================
+show_help() {
+    cat <<EOF
+cPanel Change Working Directory (cp-cwd.sh) v${VERSION}
+Fast SSH navigation wrapper to jump directly to any cPanel account's DocumentRoot.
+
+Usage:
+  ${SCRIPT_NAME} [OPTIONS] <username|domain[/subdir]>
+  cwd <username|domain[/subdir]>  (when shell wrapper is installed)
+
+Navigation Options:
+  -p, --print              Print the resolved path directly to stdout (default)
+  -c, --cd-eval            Output 'cd "/path"' for shell evaluation
+  -l, --list               List all domains and their document roots on the server
+  -i, --install            Install the 'cwd' helper function to ~/.bashrc
+      --uninstall          Remove the 'cwd' helper function from ~/.bashrc
+
+Output & Behavior Options:
+  -o, --output <fmt>       Output format: table (default), json, csv (for --list or lookup)
+  -q, --quiet              Suppress error messages and hints
+      --no-color           Disable ANSI colors
+  -V, --version            Show version and exit
+  -h, --help               Show this help message and exit
+
+Exit Codes:
+  0  Target resolved and directory exists
+  1  Target not found, directory missing, or usage error
+
+Examples:
+  # Print document root of a domain:
+  ${SCRIPT_NAME} example.com
+
+  # Change directory using command substitution:
+  cd "\$(${SCRIPT_NAME} example.com)"
+
+  # Jump to a subpath (falls back to closest existing parent directory):
+  cd "\$(${SCRIPT_NAME} example.com/wp-content/themes)"
+
+  # Jump by cPanel username:
+  cd "\$(${SCRIPT_NAME} cpaneluser)"
+
+  # List all hosted domains and docroots in JSON:
+  ${SCRIPT_NAME} -l -o json
+
+  # Install the shell wrapper so you can simply type 'cwd domain.com':
+  ${SCRIPT_NAME} --install
+EOF
+}
+
+# =============================================================================
+# Shell Wrapper Management
+# =============================================================================
+install_wrapper() {
+    local script_abs
+    script_abs="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+    local rc_file="${HOME}/.bashrc"
+    local marker="# CWD AUTO-WRAPPER"
+
+    if [[ -f "$rc_file" ]] && grep -q "$marker" "$rc_file" 2>/dev/null; then
+        sed -i "/${marker}/,/# END CWD WRAPPER/d" "$rc_file"
+    fi
+
+    cat >> "$rc_file" <<EOF
+
+${marker} - Managed by cp-cwd.sh
 cwd() {
-    local output
-    output=\$($SCRIPT_PATH "\$@" 2>&1)
-    local exit_code=\$?
-    if [[ \$exit_code -eq 0 ]]; then
-        eval "\$output"
+    local dest
+    dest="\$("${script_abs}" -p "\$@" 2>/dev/null)"
+    local ec=\$?
+    if [[ \$ec -eq 0 && -n "\$dest" && -d "\$dest" ]]; then
+        cd "\$dest" || return 1
+        echo "[cwd] -> \$dest"
     else
-        echo "\$output" | sed 's/^echo "//; s/"\$//'
+        "${script_abs}" "\$@"
     fi
 }
 # END CWD WRAPPER
 EOF
-        
-        echo "CWD wrapper installed in .bashrc"
-        echo "Run 'source ~/.bashrc' or log in again to use the 'cwd' command"
-        echo ""
-    }
-    
-    check_and_install_wrapper
-fi
 
-# ========== MAIN SCRIPT ==========
-
-QUIET_MODE=0
-VERBOSE=0
-URL=""
-ERROR_OCCURRED=0
-ERROR_MESSAGE=""
-
-set_error() {
-    ERROR_MESSAGE="$1"
-    ERROR_OCCURRED=1
-    return 1
+    log_ok "Shell wrapper installed in: ${rc_file}"
+    log_info "Run 'source ~/.bashrc' or open a new terminal to start using the 'cwd' command."
+    exit 0
 }
 
-print_error_and_exit() {
-    local msg="$1"
-    msg=$(echo "$msg" | sed 's/"/\\"/g')
-    echo "echo \"$msg\""
-    exit 1
-}
+uninstall_wrapper() {
+    local rc_file="${HOME}/.bashrc"
+    local marker="# CWD AUTO-WRAPPER"
 
-print_quiet_exit() {
-    echo "echo -n"
-    exit 1
-}
-
-# Parse arguments
-while getopts "qv" opt; do
-    case $opt in
-        q) QUIET_MODE=1 ;;
-        v) VERBOSE=1 ;;
-        *) 
-            echo "echo \"USAGE: cwd [-q] [-v] username|domain.com/subdir\""
-            exit 0
-            ;;
-    esac
-done
-
-shift $((OPTIND-1))
-
-URL="$1"
-
-[[ -z "$URL" ]] && { echo "echo \"USAGE: cwd [-q] [-v] username|domain.com/subdir\""; exit 0; }
-
-# Checks if it is an IP
-if [[ "$URL" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-    if [[ $QUIET_MODE -eq 0 ]]; then
-        echo "echo Cannot look up document root by IP -- must provide domain name or URL."
+    if [[ -f "$rc_file" ]] && grep -q "$marker" "$rc_file" 2>/dev/null; then
+        sed -i "/${marker}/,/# END CWD WRAPPER/d" "$rc_file"
+        log_ok "Shell wrapper removed from: ${rc_file}"
     else
-        echo "echo -n"
+        log_warn "Shell wrapper not found in: ${rc_file}"
     fi
     exit 0
-fi
-
-split_url() {
-    local url="$1"
-    local domain=""
-    local uri=""
-    
-    if [[ "$url" == *"/"* ]]; then
-        if [[ ! "$url" =~ ^(ftp|https?):// ]]; then
-            if [[ "$url" =~ :// ]]; then
-                set_error "Malformed URL. Only ftp, http, and https protocols are accepted"
-                return 1
-            fi
-            url="http://$url"
-        fi
-        
-        local temp="${url#*://}"
-        
-        if [[ "$temp" == *"/"* ]]; then
-            domain="${temp%%/*}"
-            uri="/${temp#*/}"
-        else
-            domain="$temp"
-            uri=""
-        fi
-        
-        [[ "$uri" == "/" ]] && uri=""
-    else
-        domain="$url"
-        uri=""
-    fi
-    
-    echo "$domain"
-    echo "$uri"
-    return 0
 }
 
-get_closest_directory() {
-    local docroot="$1"
-    local uri="$2"
+# =============================================================================
+# Argument Parser
+# =============================================================================
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -p|--print)            MODE="print"; shift ;;
+            -c|--cd-eval)          MODE="eval"; shift ;;
+            -l|--list)             MODE="list"; shift ;;
+            -i|--install)          MODE="install"; shift ;;
+            --uninstall)           MODE="uninstall"; shift ;;
+            -o|--output)
+                [[ $# -lt 2 ]] && { log_err "$1 requires a format"; exit 1; }
+                OUTPUT_FORMAT="$2"; shift 2 ;;
+            -q|--quiet)            QUIET=true; shift ;;
+            --no-color)            NO_COLOR=true; shift ;;
+            -V|--version)          echo "cPanel Change Working Directory v${VERSION}"; exit 0 ;;
+            -h|--help)             show_help; exit 0 ;;
+            -*)                    log_err "Unknown option: $1 (use --help)"; exit 1 ;;
+            *)                     TARGET="$1"; shift ;;
+        esac
+    done
+
+    case "$OUTPUT_FORMAT" in
+        table|json|csv) ;;
+        *) log_err "--output must be table, json, or csv"; exit 1 ;;
+    esac
+
+    if [[ "$MODE" == "install" ]]; then
+        install_wrapper
+    elif [[ "$MODE" == "uninstall" ]]; then
+        uninstall_wrapper
+    fi
+
+    if [[ "$MODE" != "list" && -z "$TARGET" ]]; then
+        log_err "Target domain or username is required (use --help for options)."
+        exit 1
+    fi
+}
+
+# =============================================================================
+# URL & Path Normalizer
+# =============================================================================
+split_target() {
+    local raw="$1"
+    raw="${raw#http://}"
+    raw="${raw#https://}"
+    raw="${raw#ftp://}"
+
+    local domain=""
+    local subpath=""
+
+    if [[ "$raw" == *"/"* ]]; then
+        domain="${raw%%/*}"
+        subpath="/${raw#*/}"
+        subpath="${subpath%/}"
+    else
+        domain="$raw"
+        subpath=""
+    fi
+
+    domain="${domain#www.}"
+    domain="$(echo "$domain" | tr '[:upper:]' '[:lower:]')"
+
+    echo "$domain"
+    echo "$subpath"
+}
+
+resolve_closest_dir() {
+    local base="$1"
+    local sub="$2"
+
+    if [[ -z "$sub" ]]; then
+        echo "$base"
+        return 0
+    fi
+
+    local candidate="${base}${sub}"
     local count=0
-    
-    while [[ ! -d "$docroot$uri" && $count -lt 10 && -n "$uri" ]]; do
-        uri="${uri%/}"
-        uri="${uri%/*}"
+
+    while [[ ! -d "$candidate" && $count -lt 10 && "$candidate" != "$base" && -n "$sub" ]]; do
+        sub="${sub%/*}"
+        candidate="${base}${sub}"
         ((count++))
     done
-    
-    if [[ -d "$docroot$uri" && -n "$uri" ]]; then
-        echo "$docroot$uri"
+
+    if [[ -d "$candidate" ]]; then
+        echo "$candidate"
     else
-        echo "$docroot"
+        echo "$base"
     fi
 }
 
-# NEW FUNCTION: Gets DocumentRoot by username OR domain
-get_docroot_smart() {
+# =============================================================================
+# Smart Docroot Resolution
+# =============================================================================
+resolve_docroot() {
     local input="$1"
     local docroot=""
-    local user=""
-    
-    # Attempt 1: If input is a valid cPanel user
-    if [[ -d "/var/cpanel/userdata/$input" ]]; then
-        user="$input"
-        
-        # Gets the user's main domain
-        local main_domain=""
-        if [[ -f "/var/cpanel/users/$user" ]]; then
-            main_domain=$(grep "^DNS=" "/var/cpanel/users/$user" | head -1 | cut -d= -f2)
-        fi
-        
-        # Attempts documentroot of the main domain
-        if [[ -n "$main_domain" && -f "/var/cpanel/userdata/$user/$main_domain" ]]; then
-            docroot=$(grep "^documentroot:" "/var/cpanel/userdata/$user/$main_domain" 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//')
-        fi
-        
-        # If not found, tries /home/$user/public_html
-        if [[ -z "$docroot" && -d "/home/$user/public_html" ]]; then
-            docroot="/home/$user/public_html"
-        fi
-        
-        if [[ -n "$docroot" ]]; then
-            echo "$docroot"
-            return 0
+    local owner=""
+
+    # 1. Direct match in /etc/userdatadomains (fastest lookup on cPanel)
+    if [[ -f /etc/userdatadomains ]]; then
+        local line
+        line=$(awk -F': ' -v d="$input" 'tolower($1) == tolower(d) {print $2; exit}' /etc/userdatadomains 2>/dev/null)
+        if [[ -n "$line" ]]; then
+            owner=$(echo "$line" | grep -oP '^[a-zA-Z0-9_-]+' || echo "")
+            docroot=$(echo "$line" | grep -oP 'path==\K[^=]+' || echo "")
+            if [[ -n "$docroot" ]]; then
+                echo "${owner}:${docroot}"
+                return 0
+            fi
         fi
     fi
-    
-    # Attempt 2: Input is a domain (removes www.)
-    local domain="${input#www.}"
-    
-    # Searches in /var/cpanel/userdata/*/
-    for user_dir in /var/cpanel/userdata/*/; do
-        [[ -d "$user_dir" ]] || continue
-        
-        user=$(basename "$user_dir")
-        
-        # Checks each domain file
-        for domain_file in "$user_dir"*; do
-            [[ -f "$domain_file" ]] || continue
-            [[ "$domain_file" == *"_SSL" ]] && continue
-            
-            local basename_file=$(basename "$domain_file")
-            
-            # Checks if the file matches the domain
-            if [[ "$basename_file" == "$domain" ]]; then
-                docroot=$(grep "^documentroot:" "$domain_file" 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//')
-                if [[ -n "$docroot" ]]; then
-                    echo "$docroot"
-                    return 0
-                fi
+
+    # 2. Check /var/cpanel/userdata/<user>/<domain>
+    if [[ -d /var/cpanel/userdata ]]; then
+        # If input matches an existing cPanel user directory
+        if [[ -d "/var/cpanel/userdata/${input}" ]]; then
+            owner="$input"
+            # Try to get main domain from /var/cpanel/users/$user
+            local main_dom=""
+            if [[ -f "/var/cpanel/users/${owner}" ]]; then
+                main_dom=$(grep -m1 '^DNS=' "/var/cpanel/users/${owner}" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
             fi
-            
-            # Or if servername/serveralias matches
-            if grep -qE "^servername: $domain$|^serveralias:.* $domain( |$)" "$domain_file" 2>/dev/null; then
-                docroot=$(grep "^documentroot:" "$domain_file" 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//')
+            if [[ -n "$main_dom" && -f "/var/cpanel/userdata/${owner}/${main_dom}" ]]; then
+                docroot=$(grep -m1 '^documentroot:' "/var/cpanel/userdata/${owner}/${main_dom}" 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//')
+            fi
+            if [[ -z "$docroot" && -d "/home/${owner}/public_html" ]]; then
+                docroot="/home/${owner}/public_html"
+            fi
+            if [[ -n "$docroot" ]]; then
+                echo "${owner}:${docroot}"
+                return 0
+            fi
+        fi
+
+        # Iterate user directories looking for the domain file
+        for udir in /var/cpanel/userdata/*/; do
+            [[ -d "$udir" ]] || continue
+            local u
+            u=$(basename "$udir")
+            [[ "$u" == "nobody" ]] && continue
+
+            local dfile="${udir}${input}"
+            if [[ -f "$dfile" ]]; then
+                docroot=$(grep -m1 '^documentroot:' "$dfile" 2>/dev/null | cut -d: -f2- | sed 's/^[[:space:]]*//')
                 if [[ -n "$docroot" ]]; then
-                    echo "$docroot"
+                    echo "${u}:${docroot}"
                     return 0
                 fi
             fi
         done
-    done
-    
-    # Attempt 3: Searches in /etc/userdatadomains
-    if [[ -f "/etc/userdatadomains" ]]; then
-        local line=$(grep "^$domain:" "/etc/userdatadomains" 2>/dev/null | head -1)
-        if [[ -n "$line" ]]; then
-            docroot=$(echo "$line" | grep -o 'path=[^[:space:]]*' | cut -d= -f2)
-            if [[ -n "$docroot" && -d "$docroot" ]]; then
-                echo "$docroot"
-                return 0
-            fi
-        fi
     fi
-    
-    # Attempt 4: Searches in /var/cpanel/users/ for the domain
-    for user_file in /var/cpanel/users/*; do
-        [[ -f "$user_file" ]] || continue
-        [[ "$(basename "$user_file")" == "nobody" ]] && continue
-        
-        if grep -qE "^DNS.*=$domain$|^XDNS.*=$domain$" "$user_file" 2>/dev/null; then
-            user=$(basename "$user_file")
-            
-            if [[ -d "/home/$user/public_html/$domain" ]]; then
-                echo "/home/$user/public_html/$domain"
-                return 0
-            elif [[ -d "/home/$user/public_html" ]]; then
-                echo "/home/$user/public_html"
-                return 0
+
+    # 3. Check /var/cpanel/users/* for DNS or XDNS match
+    if [[ -d /var/cpanel/users ]]; then
+        for ufile in /var/cpanel/users/*; do
+            [[ -f "$ufile" ]] || continue
+            local u
+            u=$(basename "$ufile")
+            [[ "$u" == "nobody" ]] && continue
+
+            if grep -qE "^(DNS|XDNS).*=${input}$" "$ufile" 2>/dev/null; then
+                owner="$u"
+                if [[ -d "/home/${owner}/public_html/${input}" ]]; then
+                    echo "${owner}:/home/${owner}/public_html/${input}"
+                    return 0
+                elif [[ -d "/home/${owner}/public_html" ]]; then
+                    echo "${owner}:/home/${owner}/public_html"
+                    return 0
+                fi
             fi
-        fi
-    done
-    
-    set_error "Could not find document root for '$input' (tried as username and domain)"
+        done
+    fi
+
     return 1
 }
 
-# ========== MAIN EXECUTION ==========
+# =============================================================================
+# Server-Wide Domain Listing Mode (-l)
+# =============================================================================
+list_all_domains() {
+    python3 - "$OUTPUT_FORMAT" "$NO_COLOR" "$C_RESET" "$C_GREEN" "$C_YELLOW" "$C_RED" <<'PYEOF'
+import csv
+import json
+import os
+import re
+import sys
 
-SPLIT_OUTPUT=$(split_url "$URL")
-if [[ $? -ne 0 ]]; then
-    if [[ $QUIET_MODE -eq 0 ]]; then
-        print_error_and_exit "$ERROR_MESSAGE"
-    else
-        print_quiet_exit
+fmt, no_col_s, c_rst, c_grn, c_yel, c_red = sys.argv[1:7]
+no_col = no_col_s == "true"
+
+results = []
+
+# Source 1: /etc/userdatadomains
+if os.path.isfile("/etc/userdatadomains"):
+    try:
+        with open("/etc/userdatadomains", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or ":" not in line:
+                    continue
+                dom, rest = line.split(":", 1)
+                dom = dom.strip()
+                parts = rest.strip().split("==")
+                user = parts[0] if len(parts) > 0 else "-"
+                docroot = "-"
+                for i in range(len(parts)-1):
+                    if parts[i] == "path":
+                        docroot = parts[i+1]
+                        break
+                exists = os.path.isdir(docroot) if docroot != "-" else False
+                results.append({
+                    "domain": dom,
+                    "user": user,
+                    "docroot": docroot,
+                    "exists": exists
+                })
+    except Exception:
+        pass
+
+# Source 2: /var/cpanel/userdata/*
+if not results and os.path.isdir("/var/cpanel/userdata"):
+    for u in os.listdir("/var/cpanel/userdata"):
+        upath = os.path.join("/var/cpanel/userdata", u)
+        if not os.path.isdir(upath) or u == "nobody":
+            continue
+        for df in os.listdir(upath):
+            if df.endswith("_SSL") or df == "main":
+                continue
+            fpath = os.path.join(upath, df)
+            if not os.path.isfile(fpath):
+                continue
+            docroot = "-"
+            try:
+                with open(fpath, encoding="utf-8", errors="replace") as fh:
+                    for ln in fh:
+                        if ln.startswith("documentroot:"):
+                            docroot = ln.split(":", 1)[1].strip()
+                            break
+            except Exception:
+                pass
+            exists = os.path.isdir(docroot) if docroot != "-" else False
+            results.append({
+                "domain": df,
+                "user": u,
+                "docroot": docroot,
+                "exists": exists
+            })
+
+results.sort(key=lambda x: x["domain"])
+
+if fmt == "json":
+    print(json.dumps({"total": len(results), "domains": results}, indent=2))
+elif fmt == "csv":
+    w = csv.writer(sys.stdout)
+    w.writerow(["domain", "user", "docroot", "exists"])
+    for r in results:
+        w.writerow([r["domain"], r["user"], r["docroot"], r["exists"]])
+else:
+    print("=" * 110)
+    print(f" CPANEL DOMAINS & DOCUMENT ROOTS | Total Hosted: {len(results)}")
+    print("=" * 110)
+    print(f"{'DOMAIN':<32} | {'USER':<14} | {'STATUS':<8} | {'DOCUMENT ROOT'}")
+    print("-" * 110)
+    for r in results:
+        st = "FOUND" if r["exists"] else "MISSING"
+        col = c_grn if r["exists"] else c_red
+        print(f"{r['domain'][:32]:<32} | {r['user'][:14]:<14} | {col}{st:<8}{c_rst} | {r['docroot']}")
+    print("=" * 110)
+    print(f" Total: {len(results)} domain(s) indexed")
+    print("=" * 110)
+PYEOF
+}
+
+# =============================================================================
+# Execution Engine
+# =============================================================================
+execute_lookup() {
+    local parts
+    parts=$(split_target "$TARGET")
+    local domain subpath
+    domain=$(echo "$parts" | sed -n '1p')
+    subpath=$(echo "$parts" | sed -n '2p')
+
+    local resolved
+    if ! resolved=$(resolve_docroot "$domain"); then
+        if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+            echo "{\"target\":\"${TARGET}\",\"status\":\"NOT_FOUND\",\"error\":\"Could not resolve document root for '${domain}'\"}"
+        elif [[ "$QUIET" == false ]]; then
+            log_err "Could not find document root for '${TARGET}' (tried username, domain, and userdata)."
+        fi
+        exit 1
     fi
-fi
 
-INPUT=$(echo "$SPLIT_OUTPUT" | sed -n '1p')
-URI=$(echo "$SPLIT_OUTPUT" | sed -n '2p')
+    local owner docroot final_path
+    owner="${resolved%%:*}"
+    docroot="${resolved#*:}"
+    final_path=$(resolve_closest_dir "$docroot" "$subpath")
 
-INPUT=$(echo "$INPUT" | tr '[:upper:]' '[:lower:]')
-
-# Uses the smart function
-DOCROOT=$(get_docroot_smart "$INPUT")
-
-if [[ $ERROR_OCCURRED -eq 1 ]]; then
-    if [[ $QUIET_MODE -eq 0 ]]; then
-        print_error_and_exit "$ERROR_MESSAGE"
-    else
-        print_quiet_exit
+    if [[ ! -d "$final_path" ]]; then
+        if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+            echo "{\"target\":\"${TARGET}\",\"user\":\"${owner}\",\"docroot\":\"${final_path}\",\"status\":\"DIR_MISSING\",\"exists\":false}"
+        elif [[ "$QUIET" == false ]]; then
+            log_err "Resolved document root directory does not exist: ${final_path}"
+        fi
+        exit 1
     fi
-fi
 
-if [[ -z "$DOCROOT" ]]; then
-    if [[ $QUIET_MODE -eq 0 ]]; then
-        print_error_and_exit "Could not determine document root"
+    if [[ "$OUTPUT_FORMAT" == "json" ]]; then
+        cat <<EOF
+{
+  "target": "${TARGET}",
+  "user": "${owner}",
+  "domain": "${domain}",
+  "subpath": "${subpath}",
+  "docroot": "${final_path}",
+  "exists": true,
+  "status": "OK"
+}
+EOF
+    elif [[ "$OUTPUT_FORMAT" == "csv" ]]; then
+        echo "target,user,domain,docroot,exists"
+        echo "${TARGET},${owner},${domain},${final_path},true"
+    elif [[ "$MODE" == "eval" ]]; then
+        echo "cd \"${final_path}\""
     else
-        print_quiet_exit
+        echo "$final_path"
     fi
-fi
 
-if [[ ! -d "$DOCROOT" ]]; then
-    if [[ $QUIET_MODE -eq 0 ]]; then
-        print_error_and_exit "Cannot change directory: $DOCROOT does not exist"
-    else
-        print_quiet_exit
+    exit 0
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+main() {
+    parse_args "$@"
+    init_colors
+
+    if [[ "$MODE" == "list" ]]; then
+        list_all_domains
+        exit 0
     fi
-fi
 
-FINAL_DIR=""
+    execute_lookup
+}
 
-if [[ -n "$URI" && -d "$DOCROOT$URI" ]]; then
-    FINAL_DIR="$DOCROOT$URI"
-elif [[ -z "$URI" ]]; then
-    FINAL_DIR="$DOCROOT"
-else
-    FINAL_DIR=$(get_closest_directory "$DOCROOT" "$URI")
-fi
-
-echo "cd $FINAL_DIR"
-exit 0
+main "$@"

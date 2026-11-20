@@ -1,323 +1,121 @@
-# cPanel Change Working Directory
+# cPanel Change Working Directory (`cp-cwd.sh`)
 
-Readme: [BR](README-ptbr.md)
+![cPanel Change Working Directory Cover](./cpanel-cwd-cover.webp)
 
-![License](https://img.shields.io/github/license/sr00t3d/cpanel-cwd) ![Shell Script](https://img.shields.io/badge/language-Bash-green.svg)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](./cp-cwd.sh)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20cPanel%20%2F%20WHM-orange.svg)](#requirements)
 
-<img width="700" src="cpanel-cwd-cover.webp" />
+> 🇧🇷 **[Leia em Português (README-ptbr.md)](./README-ptbr.md)**
 
-> **Bash rewrite of the original Perl cwd utility by Robert West (HostGator)**
+**cPanel Change Working Directory** (`cp-cwd.sh` v2.0.0) is a fast Bash CLI navigation tool and shell wrapper for cPanel/WHM servers. It instantly resolves any account's DocumentRoot by domain or username (including addon domains, subdomains, and nested subpaths with fallback), eliminating manual lookups and navigation delays.
 
-A smart Bash script to quickly change to the document root of cPanel accounts. Accepts both **usernames** and **domain names**, with auto-installation of shell wrapper.
+Inspired by the original Perl `cwd` utility created by Robert West at HostGator (2012).
 
-## About
-
-This project is a **Bash rewrite** of the original Perl script `cwd` created by **Robert West** at HostGator. The original script used cPanel's XML API to fetch document roots, but required authentication and running cPanel services.
-
-### Why a Bash Rewrite?
-
-- **No API dependency** - Reads directly from cPanel files
-- **Works offline** - No need for cPanel services to be running
-- **Smarter matching** - Accepts username OR domain name
-- **Auto-installation** - Installs shell wrapper automatically
-- **No Perl modules** - Pure Bash, no dependencies
-
-## Original Reference
-
-```perl
-#!/usr/bin/perl
-#
-# SCRIPT NAME: cwd (Change Working Directory / Change to Web DocumentRoot / Cobras Work Diligently)
-#
-# DESCRIPTION:
-#	On cPanel servers, cwd will change the console's working directory into the
-#	DocumentRoot of the domain specified.
-#
-# USAGE:
-#	[root@gator1337 ~]# cwd gator.com
-#	[root@gator1337 /home/gator/public_html/]# 
-#
-# URL TO WIKI: /Admin/CWD 
-# URL TO GIT: /cwd
-# MAINTAINER: Robert West
-#
-# (C) 2012 - HostGator.com, LLC
-```
-
-**Original Author**: Robert West (HostGator)  
-**Original Date**: 2012  
-**Original Version**: 0.3.4  
-**Original Purpose**: Quick navigation to cPanel account document roots
+---
 
 ## Features
 
-| Feature | Description | Original | This Version |
-|---------|-------------|----------|--------------|
-| Change to docroot | Navigate to account public_html | ✅ | ✅ |
-| Username support | Accept cPanel username | ❌ | ✅ |
-| Domain support | Accept domain name | ✅ | ✅ |
-| Subdirectory support | Navigate to subdirs if exist | ✅ | ✅ |
-| Auto-install wrapper | Install function in .bashrc | ❌ | ✅ |
-| No API required | Read files directly | ❌ | ✅ |
-| Works offline | No cPanel services needed | ❌ | ✅ |
-| Quiet mode | Suppress error messages | ✅ | ✅ |
-| Verbose mode | Detailed error messages | ✅ | ✅ |
+- **Domain or Username Resolution:** Accepts cPanel username, primary domain, addon domain, or subdomain.
+- **Smart Subpath Fallback:** Supports paths like `example.com/wp-content/themes` and gracefully falls back to the closest existing directory if the target subfolder does not exist.
+- **Zero API Dependency:** Reads directly from cPanel local files (`/etc/userdatadomains`, `/var/cpanel/userdata/`, `/var/cpanel/users/`) — works even during API outages.
+- **Opt-in Shell Wrapper (`-i, --install`):** Idempotently installs a clean `cwd` helper function to `~/.bashrc` so you can jump between accounts with `cwd domain.com`.
+- **Server-Wide Domain Listing (`-l, --list`):** Scans and displays all hosted domains, owners, docroots, and folder health in aligned `table`, `json`, or `csv`.
+- **Scriptable Modes:** Outputs raw path (`-p`), eval command (`-c`), or JSON (`-o json`) with semantic exit code `0` on resolution and `1` on missing targets.
+
+---
 
 ## Requirements
 
-- **Bash** 4.0+
-- **cPanel/WHM** server (reads `/var/cpanel/userdata/`)
-- Root or sudo access
-- Standard Unix tools: `grep`, `sed`, `cut`
+- Linux with Bash 4.0+ and Python 3.6+
+- cPanel & WHM server with read access to `/etc/userdatadomains` or `/var/cpanel/`
+
+---
 
 ## Installation
 
-### Automatic (Recommended)
-
-Simply run the script once - it will auto-install the wrapper:
-
 ```bash
-# Download and make executable
-curl -O https://raw.githubusercontent.com/sr00t3d/cpanel-cwd/refs/heads/main/cp-cwd.sh
+git clone https://github.com/sr00t3d/cpanel-cwd.git
+cd cpanel-cwd
 chmod +x cp-cwd.sh
 
-# Run once to install wrapper
-./cp-cwd.sh any-domain.com
-
-# Output:
-# CWD wrapper installed in .bashrc
-# Run 'source ~/.bashrc' or login again to use 'cwd' command
-```
-
-### Manual Function
-
-Add to your `~/.bashrc`:
-
-```bash
-cwd() {
-    local output
-    output=$("/path/to/cp-cwd.sh" "$@" 2>&1)
-    local exit_code=$?
-    if [[ $exit_code -eq 0 ]]; then
-        eval "$output"
-    else
-        echo "$output" | sed 's/^echo "//; s/"$//'
-    fi
-}
-```
-
-Then reload:
-```bash
+# Install the optional 'cwd' helper function to ~/.bashrc:
+./cp-cwd.sh --install
 source ~/.bashrc
 ```
+
+---
 
 ## Usage
 
 ```bash
-cwd [OPTIONS] username|domain[/subdir]
+# Print document root directly:
+./cp-cwd.sh example.com
+
+# Change directory using command substitution:
+cd "$(./cp-cwd.sh example.com)"
+
+# Jump to subpath (with automatic closest-parent fallback):
+cd "$(./cp-cwd.sh example.com/blog/uploads)"
+
+# Jump by cPanel account username:
+cd "$(./cp-cwd.sh cpaneluser)"
+
+# List all hosted domains on the server:
+./cp-cwd.sh -l
+
+# Export all server domains and docroots to JSON:
+./cp-cwd.sh -l -o json > server-docroots.json
+
+# Shell wrapper usage (after --install):
+cwd example.com
+cwd mydomain.com/wp-admin
 ```
 
-### Arguments
+### CLI Options
 
-| Argument | Description | Examples |
-|----------|-------------|----------|
-| `username` | cPanel account username, example | `linux`, `domain123` |
-| `domain` | Domain name (with or without www), example | `linux.com`, `www.example.com` |
-| `/subdir` | Optional subdirectory path, example | `/blog`, `/wp-admin` |
-
-### Options
-
-| Option | Description |
-|--------|-------------|
-| `-q` | Quiet mode - suppress error messages |
-| `-v` | Verbose mode - show detailed errors |
-| `-h` | Show help |
-
-## Examples
-
-### By Username
-
-```bash
-[root@vps ~]# cwd linux
-[root@vps public_html]# pwd
-/home/linux/public_html
-```
-
-### By Domain Name
-
-```bash
-[root@vps ~]# cwd linux.com
-[root@vps public_html]# pwd
-/home/linux/public_html
-```
-
-### With Subdirectory
-
-```bash
-[root@vps ~]# cwd linux.com/blog
-[root@vps blog]# pwd
-/home/linux/public_html/blog
-```
-
-### With Subdomain
-
-```bash
-[root@vps ~]# cwd forum.linux.com
-[root@vps blog]# pwd
-/home/linux/public_html/blog
-
-### Subdirectory Fallback
-
-If subdirectory doesn't exist, goes to closest parent:
-
-```bash
-[root@vps ~]# cwd linux.com/nonexistent/deep/path
-[root@vps public_html]# pwd
-/home/linux/public_html
-```
-
-### Quiet Mode (for scripts)
-
-```bash
-[root@vps ~]# cwd -q nonexistentuser
-[root@vps ~]#  # No error message shown
-```
-
-### Verbose Mode (debugging)
-
-```bash
-[root@vps ~]# cwd -v wrongdomain.com
-Could not find document root for 'wrongdomain.com' (tried as username and domain)
-```
-
-## How It Works
-
-### Search Order
-
-The script tries to find the document root in this order:
-
-1. **Username match** - Checks if input is a cPanel user in `/var/cpanel/userdata/`
-2. **Domain file match** - Looks for exact domain file in userdata
-3. **ServerName/Alias match** - Searches servername and serveralias fields
-4. **userdata domains index** - Checks `/etc/userdatadomains`
-5. **DNS field match** - Searches `/var/cpanel/users/` for domain association
-
-### File Locations Read
-
-| File/Directory | Purpose |
-|----------------|---------|
-| `/var/cpanel/userdata/$user/$domain` | Per-domain configuration |
-| `/var/cpanel/users/$user` | User account info (DNS= fields) |
-| `/etc/userdatadomains` | Domain-to-path index |
-| `/home/$user/public_html` | Default document root fallback |
-
-### The Wrapper Trick
-
-The script uses a bash trick to change the **current shell's** directory:
-
-```bash
-# Script outputs:
-cd /home/user/public_html
-
-# Wrapper evaluates:
-eval "$(cp-cwd.sh domain.com)"
-```
-
-Without this, `cd` would only change the directory in a subshell.
-
-## Comparison with Original
-
-| Aspect | Perl Original | Bash Version |
-|--------|---------------|--------------|
-| API used | cPanel XML-API (port 2086) | Direct file reading |
-| Authentication | WHM access hash required | No authentication |
-| Dependencies | LWP::UserAgent, XML::Simple, HTTP::Request | Standard Unix tools |
-| Username input | No | Yes |
-| Offline operation | No | Yes |
-| cPanel services | Must be running | Not required |
-| Speed | Slower (HTTP request) | Instant (file read) |
-
-## Troubleshooting
-
-### "cwd: command not found"
-
-```bash
-# Wrapper not loaded, source it:
-source ~/.bashrc
-
-# Or run directly once to install:
-./cp-cwd.sh any-domain.com
-```
-
-### "Could not determine document root"
-
-- Domain doesn't exist on server
-- Username doesn't exist
-- cPanel files are corrupted or missing
-
-Debug with:
-```bash
-# Check if user exists
-ls /var/cpanel/userdata/username
-
-# Check domain files
-ls /var/cpanel/userdata/username/domain.com
-
-# Check documentroot in file
-grep documentroot /var/cpanel/userdata/username/domain.com
-```
-
-### Wrapper keeps reinstalling
-
-Check if multiple installations exist:
-```bash
-grep -n "CWD AUTO-WRAPPER" ~/.bashrc
-```
-
-Clean and reinstall:
-```bash
-sed -i '/# CWD AUTO-WRAPPER/,/# END CWD WRAPPER/d' ~/.bashrc
-./cp-cwd.sh domain.com  # Reinstalls once
-source ~/.bashrc
-```
-
-**Tip**: Add `alias c='cwd'` to your `.bashrc` for even faster navigation!
-
-## Important Notes
-
-1. **Requires root** - Must read `/var/cpanel/` files
-2. **Bash only** - Does not work in `sh` or `zsh` without modification
-3. **cPanel specific** - Designed for cPanel/WHM servers
-4. **First run** - Installs wrapper, may need `source ~/.bashrc` after
-
-## Credits
-
-- **Original Author**: Robert West (HostGator)
-- **Original Date**: 2012
-- **Original Version**: 0.3.4
-- **Bash Rewrite**: 2026
-- **Purpose**: System administration tool for cPanel/WHM servers
-
-## Links
-
-- Original HostGator Wiki: `https://gatorwiki.hostgator.com/Admin/CWD`
-- Original Repository: `http://git.toolbox.hostgator.com/cwd`
-
-## Legal Notice
-
-> [!WARNING]
-> This software is provided "as is." Always ensure you have explicit permission before executing it. The author is not responsible for any misuse, legal consequences, or data impact caused by this tool.
-
-## Detailed Tutorial
-
-For a complete, step-by-step guide, check out my full article:
-
-👉 [**Fast navigation directy cPanel**](https://perciocastelo.com.br/blog/fast-navigation-directory-cpanel.html)
-
-## License
-
-This project is licensed under the **GNU General Public License v3.0**. See the [LICENSE](LICENSE) file for more details.
+| Flag | Description |
+| :--- | :--- |
+| `<target>` | Domain or username (with optional `/subpath`) |
+| `-p, --print` | Print resolved path directly to stdout (default) |
+| `-c, --cd-eval` | Output `cd "/path"` for shell evaluation |
+| `-l, --list` | List all hosted domains and docroots on the server |
+| `-i, --install` | Install `cwd` shell function to `~/.bashrc` |
+| `--uninstall` | Remove `cwd` shell function from `~/.bashrc` |
+| `-o, --output <fmt>` | Output format: `table` (default), `json`, `csv` |
+| `-q, --quiet` | Suppress error messages and hints |
+| `--no-color` | Disable ANSI colors |
+| `-V, --version` | Show version and exit |
+| `-h, --help` | Show help message and exit |
 
 ---
 
-**Note**: This is an unofficial rewrite and not supported/sponsored by HostGator.
+## Real Output Example
+
+Captured on an AlmaLinux 8.10 / cPanel test container running domain listing (`-l`) and subpath lookups:
+
+```text
+==============================================================================================================
+ CPANEL DOMAINS & DOCUMENT ROOTS | Total Hosted: 3
+==============================================================================================================
+DOMAIN                           | USER           | STATUS   | DOCUMENT ROOT
+--------------------------------------------------------------------------------------------------------------
+blog.mygator.com                 | gatoruser      | FOUND    | /home/gatoruser/public_html/blog
+clientdemo.org                   | clientdemo     | FOUND    | /home/clientdemo/public_html
+mygator.com                      | gatoruser      | FOUND    | /home/gatoruser/public_html
+==============================================================================================================
+ Total: 3 domain(s) indexed
+==============================================================================================================
+
+$ ./cp-cwd.sh mygator.com/blog
+/home/gatoruser/public_html/blog
+
+$ ./cp-cwd.sh -c clientdemo.org
+cd "/home/clientdemo/public_html"
+```
+
+---
+
+## License
+
+Licensed under the [Apache-2.0 License](./LICENSE). Inspired by the original Perl `cwd` utility by Robert West (HostGator, 2012).
